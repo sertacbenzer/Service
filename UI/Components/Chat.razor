@@ -1,0 +1,191 @@
+@page "/"
+@rendermode InteractiveServer
+@using UI.Models
+@using System.Net.Http.Json
+@using Microsoft.JSInterop
+@inject NavigationManager Navigation
+@inject HttpClient Http
+@inject IJSRuntime JS
+
+<PageTitle>Yatırım Asistanı</PageTitle>
+
+<div class="chat-container">
+    <div class="sidebar">
+        <div class="logo">
+            <h3>💰 Finansal Asistan</h3>
+        </div>
+        
+        <div class="user-info">
+            <p><strong>@UserName</strong></p>
+            <p class="small">@UserProfile</p>
+        </div>
+
+        <button class="new-chat-btn" @onclick="NewChat">+ Yeni Sohbet</button>
+    </div>
+
+    <div class="chat-area">
+        <div class="chat-header">
+            <h4>Akıllı Yatırım Danışmanı</h4>
+            <span class="status">● Çevrimiçi</span>
+        </div>
+
+        <div class="messages" id="messageArea">
+            @foreach (var msg in Messages)
+            {
+                <div class="@(msg.IsUser ? "user-message" : "assistant-message")">
+                    <div class="message-bubble">
+                        @((MarkupString)msg.Content)
+                    </div>
+                </div>
+            }
+            @if (IsThinking)
+            {
+                <div class="assistant-message">
+                    <div class="typing">Asistan yazıyor<span class="dots">...</span></div>
+                </div>
+            }
+        </div>
+
+        <div class="input-area">
+            <textarea @bind="CurrentMessage" @bind:event="oninput"
+                      @onkeydown="HandleKeyDown"
+                      placeholder="Sorunuzu yazın... (Örn: Gram altın almak mantıklı mı?)"
+                      rows="2"></textarea>
+            <button type="button" @onclick="TestSendClick" style="cursor: pointer;">Gönder</button>
+        </div>
+        <div style="position: fixed; bottom: 100px; right: 20px; background: rgba(0,0,0,0.8); color: #0f0; padding: 10px; border-radius: 5px; font-size: 12px; z-index: 99999;">
+            <div>Msg: @CurrentMessage.Length</div>
+            <div>Thinking: @IsThinking</div>
+            <div>Send clicks: @SendClicks</div>
+        </div>
+    </div>
+</div>
+
+@code {
+    private List<ChatMessage> Messages = new();
+    private string CurrentMessage = "";
+    private bool IsThinking = false;
+    private int TestClicks = 0;
+    private int SendClicks = 0;
+    private string UserName = "Sertaç Benzer";
+    private string UserProfile = "Orta Seviye Yatırımcı • 1.2 Milyon TL Portföy";
+
+    private void TestSendClick()
+    {
+        SendClicks++;
+    }
+
+    private async Task SendMessage()
+    {
+        SendClicks++;
+        await JS.InvokeVoidAsync("console.log", $">>> SendMessage called. Message='{CurrentMessage}', IsThinking={IsThinking}, Click count: {SendClicks}");
+        StateHasChanged();
+        
+        if (string.IsNullOrWhiteSpace(CurrentMessage) || IsThinking) 
+        {
+            await JS.InvokeVoidAsync("console.warn", $">>> SendMessage returning early. Empty or thinking.");
+            return;
+        }
+
+        var userMsg = new ChatMessage { Content = CurrentMessage, IsUser = true };
+        Messages.Add(userMsg);
+        var question = CurrentMessage;
+        CurrentMessage = string.Empty;
+        IsThinking = true;
+        StateHasChanged();
+        await JS.InvokeVoidAsync("console.log", "SendMessage started");
+
+        // Scroll to bottom
+        await Task.Delay(100);
+        try
+        {
+            await JS.InvokeVoidAsync("scrollToBottom");
+        }
+        catch { }
+
+        try
+        {
+            var apiUrl = Navigation.ToAbsoluteUri("api/rag/answer").ToString();
+            var resp = await Http.PostAsJsonAsync(apiUrl, new { Query = question });
+            if (!resp.IsSuccessStatusCode)
+            {
+                Messages.Add(new ChatMessage { Content = $"Hata: {resp.ReasonPhrase}", IsUser = false });
+            }
+            else
+            {
+                var dto = await resp.Content.ReadFromJsonAsync<AnswerDto>();
+                var answer = dto?.answer ?? "Cevap alınamadı.";
+                Messages.Add(new ChatMessage { Content = answer, IsUser = false });
+            }
+        }
+        catch (Exception ex)
+        {
+            Messages.Add(new ChatMessage { Content = $"Hata: {ex.Message}", IsUser = false });
+        }
+
+        IsThinking = false;
+        StateHasChanged();
+
+        IsThinking = false;
+        await Task.Delay(50);
+        await JS.InvokeVoidAsync("scrollToBottom");
+    }
+
+    private async Task HandleKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter" && !e.ShiftKey)
+        {
+            await SendMessage();
+        }
+    }
+
+    private void NewChat()
+    {
+        Messages.Clear();
+        StateHasChanged();
+    }
+
+
+    [JSInvokable]
+    public void AddMessage(string content, bool isUser)
+    {
+        Messages.Add(new ChatMessage { Content = content, IsUser = isUser });
+        StateHasChanged();
+    }
+
+    [JSInvokable]
+    public void SetThinking(bool thinking)
+    {
+        IsThinking = thinking;
+        StateHasChanged();
+    }
+
+    private record AnswerDto(string answer);
+    private bool _componentRegistered = false;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender && !_componentRegistered)
+        {
+            try
+            {
+                _componentRegistered = true;
+                await JS.InvokeVoidAsync("console.log", ">>> Chat.razor OnAfterRenderAsync START");
+                
+                // Simple test first
+                await JS.InvokeVoidAsync("console.log", ">>> About to create DotNetObjectReference");
+                var reference = DotNetObjectReference.Create(this);
+                await JS.InvokeVoidAsync("console.log", ">>> DotNetObjectReference created");
+                
+                await JS.InvokeVoidAsync("console.log", ">>> About to call registerChatComponent");
+                await JS.InvokeVoidAsync("registerChatComponent", reference);
+                await JS.InvokeVoidAsync("console.log", ">>> registerChatComponent called successfully");
+            }
+            catch (Exception ex)
+            {
+                await JS.InvokeVoidAsync("console.error", ">>> Registration error: " + ex.Message);
+                await JS.InvokeVoidAsync("console.error", ">>> Stack: " + ex.StackTrace);
+            }
+        }
+    }
+}
